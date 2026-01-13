@@ -1,0 +1,27 @@
+Bootstrap: docker
+From: condaforge/miniforge3:25.9.1-0
+
+%files
+	CMakeLists.txt /opt/
+	*.hpp /opt/
+	*.cpp /opt/
+	cnpy /opt/
+	tclap /opt/
+
+%post
+	conda install numpy mkl mkl-service blas=*=*mkl cmake zlib catch2 fftw \
+	      pybind11 make cxx-compiler h5py
+	cd /opt
+	wget https://www.jjj.de/fxt/fxt-2025.06.26.tar.gz
+	tar xvf fxt-2025.06.26.tar.gz
+	cd fxt
+	make install
+	cd /opt/
+	mkdir build/
+	cd build/
+	cmake .. -DCMAKE_INSTALL_PREFIX=/opt/conda/ -DBLAS=MKL \
+	      -DARCH=emeraldrapids -DCMAKE_BUILD_TYPE=Release \
+	      -DBUILD_MULTIPLY=ON -DBUILD_TESTS=ON -DBUILD_PYTHON=ON \
+	      -DENABLE_FFTW=ON -DENABLE_FXT=ON
+	make
+	make install

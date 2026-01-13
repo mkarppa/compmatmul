@@ -1,0 +1,107 @@
+# Compressed Matrix Multiplication
+# CMake file
+# Copyright (c) Joel Andersson 2024
+# Copyright (c) Matti Karppa 2024, 2025
+
+cmake_minimum_required(VERSION 3.27)
+project(compmatmul CXX)
+
+set(CMAKE_CXX_STANDARD 23)
+
+if(NOT DEFINED ARCH)
+  message(WARNING "No ARCH defined, assuming -march=native (specify -DARCH explicitly for maximum performance if running on another system)")
+  set(ARCH native CACHE STRING "Which -march option to use?")
+endif()
+
+set(BLAS OPENBLAS CACHE STRING "BLAS implementation to use")
+set_property(CACHE BLAS PROPERTY STRINGS OPENBLAS MKL)
+
+if (${BLAS} STREQUAL "OPENBLAS")
+  set(BLA_VENDOR "OpenBLAS")
+  find_package(BLAS REQUIRED)
+  message(STATUS ${BLA_VENDOR} " " ${BLAS_LIBRARIES})
+elseif (${BLAS} STREQUAL "MKL")
+  set(MKL_INTERFACE "lp64")
+  find_package(MKL CONFIG REQUIRED)
+else()
+  message(FATAL_ERROR "Unsupported BLAS library!")
+endif()
+
+option(BUILD_MULTIPLY "Build the helper tool 'multiply'" ON)
+option(BUILD_TESTS "Build unit tests and microbenchmarks" OFF)
+option(BUILD_PYTHON "Build Python module")
+option(ENABLE_FFTW "Enable FFTW support" OFF)
+option(ENABLE_FXT "Enable TXT support" OFF)
+
+add_library(libcompmatmul INTERFACE array.hpp hashing.hpp rng.hpp transform.hpp)
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+  target_compile_options(libcompmatmul INTERFACE -Wall -Wextra -pedantic -g -fsanitize=address -fopenmp)
+elseif (CMAKE_BUILD_TYPE STREQUAL "Release")
+  target_compile_options(libcompmatmul INTERFACE -Wall -Wextra -pedantic -O3 -march=${ARCH} -fopenmp)
+else()
+  message(FATAL_ERROR "Invalid build type")
+endif()
+target_link_options(libcompmatmul INTERFACE -fopenmp)
+
+if (${BLAS} STREQUAL "OPENBLAS")
+  target_compile_definitions(libcompmatmul INTERFACE COMPMATMUL_USE_OPENBLAS)
+  target_compile_options(libcompmatmul INTERFACE ${BLAS_LINKER_FLAGS})
+  target_link_libraries(libcompmatmul INTERFACE ${BLAS_LIBRARIES})
+elseif (${BLAS} STREQUAL "MKL")
+  target_compile_definitions(libcompmatmul INTERFACE COMPMATMUL_USE_MKL)
+  target_compile_options(libcompmatmul INTERFACE $<TARGET_PROPERTY:MKL::MKL,INTERFACE_COMPILE_OPTIONS>)
+  target_include_directories(libcompmatmul INTERFACE $<TARGET_PROPERTY:MKL::MKL,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_link_libraries(libcompmatmul INTERFACE $<LINK_ONLY:MKL::MKL>)
+endif()
+
+if (ENABLE_FFTW)
+  target_sources(libcompmatmul INTERFACE matmul_fft.hpp)
+  target_compile_definitions(libcompmatmul INTERFACE COMPMATMUL_USE_FFTW)
+  find_package(FFTW3)
+  target_link_libraries(libcompmatmul INTERFACE ${FFTW3_LIBRARIES})  
+  target_link_directories(libcompmatmul INTERFACE ${FFTW3_LIBRARY_DIRS})
+  target_include_directories(libcompmatmul INTERFACE ${FFTW3_INCLUDE_DIRS})
+endif()
+
+if (ENABLE_FXT)
+  target_sources(libcompmatmul INTERFACE matmul_fwht.hpp)
+  target_compile_definitions(libcompmatmul INTERFACE COMPMATMUL_USE_FXT)
+  find_library(FXT_LIBRARIES NAMES fxt)
+  find_path(FXT_INCLUDE_DIRS NAMES "walsh/walshwak.h" PATH_SUFFIXES "fxt")
+  target_link_libraries(libcompmatmul INTERFACE ${FXT_LIBRARIES})
+  target_include_directories(libcompmatmul INTERFACE ${FXT_INCLUDE_DIRS})
+endif()
+
+
+if (BUILD_MULTIPLY)
+  # cnpy depends on ZLIB to support npz files
+  find_package(ZLIB)
+  add_executable(multiply multiply.cpp cnpy/cnpy.cpp)
+  target_include_directories(multiply PRIVATE "tclap/include" "cnpy/")
+  target_link_libraries(multiply ZLIB::ZLIB libcompmatmul)
+  if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_link_options(multiply PRIVATE -fsanitize=address)
+  endif()
+  install(TARGETS multiply)
+endif (BUILD_MULTIPLY)
+
+if (BUILD_TESTS)
+  find_package(Catch2 3 REQUIRED)
+  add_executable(tests tests.cpp)
+  target_link_libraries(tests PRIVATE Catch2::Catch2WithMain libcompmatmul)
+  if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_link_options(tests PRIVATE -fsanitize=address)
+  endif()
+endif (BUILD_TESTS)
+
+if (BUILD_PYTHON)
+  find_package(Python ${PYTHON_VERSION} REQUIRED COMPONENTS Development Interpreter)
+  find_package(pybind11 REQUIRED CONFIG)
+  pybind11_add_module(compmatmul MODULE compmatmul.cpp)
+  target_link_libraries(compmatmul PUBLIC libcompmatmul)
+  if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_link_options(compmatmul PRIVATE -fsanitize=address)
+  endif()
+  install(TARGETS compmatmul LIBRARY DESTINATION ${Python_SITEARCH})
+endif (BUILD_PYTHON)
+
